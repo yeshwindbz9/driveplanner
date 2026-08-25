@@ -2,7 +2,7 @@
 
 **AI-powered route, cost and journey planning for road trips.**
 
-DrivePlanner is a lightweight single-page web application that goes beyond standard directions. It combines real route data with deterministic cost and emissions calculations, route-aware weather checks, break and fuel/charging recommendations, AI-assisted vehicle efficiency estimates, AI journey advice, rough drive-vs-train comparison, and one-click navigation handoff to Google Maps or Waze.
+DrivePlanner is a lightweight single-page web application that goes beyond standard directions. It combines real route data with deterministic cost and emissions calculations, route-aware weather checks, break and fuel/charging recommendations, AI assisted vehicle efficiency estimates, AI journey advice, rough drive vs train comparison, and one-click navigation handoff to Google Maps or Waze.
 
 The project was built as a **single-day MVP** with a focus on keeping the architecture simple, practical, explainable, and inexpensive to run.
 
