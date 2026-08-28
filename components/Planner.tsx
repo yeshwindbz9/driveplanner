@@ -230,6 +230,8 @@ type RouteStopsResult = {
   recommendedVehicleStop: RecommendedPlace | null;
 };
 
+type DepartureMode = "now" | "scheduled";
+
 const VEHICLE_MAKES = [
   "Audi",
   "BMW",
@@ -684,6 +686,36 @@ function formatElapsedTime(seconds: number) {
   return `${hours}h ${minutes}m`;
 }
 
+function formatTripDateTime(value: string | null) {
+  if (!value) return "";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "";
+
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function isWithinForecastWindow(value: string, days = 16) {
+  const target = new Date(value);
+
+  if (Number.isNaN(target.getTime())) return false;
+
+  const now = new Date();
+  const limit = new Date(now);
+  limit.setDate(limit.getDate() + days);
+
+  const earliest = new Date(now.getTime() - 10 * 60_000);
+
+  return target >= earliest && target <= limit;
+}
+
 export default function Planner() {
   const [step, setStep] = useState(1);
 
@@ -710,8 +742,9 @@ export default function Planner() {
     useState<VehicleEfficiencyEstimate | null>(null);
   const [vehicleEfficiencyLoading, setVehicleEfficiencyLoading] =
     useState(false);
-  const [vehicleEfficiencyError, setVehicleEfficiencyError] =
-    useState<string | null>(null);
+  const [vehicleEfficiencyError, setVehicleEfficiencyError] = useState<
+    string | null
+  >(null);
 
   const [breakFrequency, setBreakFrequency] = useState(2);
   const [currency, setCurrency] = useState<Currency>("GBP");
@@ -744,9 +777,40 @@ export default function Planner() {
   const [aiJourneyError, setAiJourneyError] = useState<string | null>(null);
   const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
 
+  const [isReturnTrip, setIsReturnTrip] = useState(false);
+
+  const [departureMode, setDepartureMode] = useState<DepartureMode>("now");
+
+  const [departureDateTime, setDepartureDateTime] = useState("");
+
+  const [returnDateTime, setReturnDateTime] = useState("");
+
+  const [minimumDepartureDateTime, setMinimumDepartureDateTime] = useState("");
+
+  const [returnRouteResult, setReturnRouteResult] =
+    useState<RouteResult | null>(null);
+
+  const [returnWeatherResult, setReturnWeatherResult] =
+    useState<RouteWeatherResult | null>(null);
+
+  const [returnWeatherError, setReturnWeatherError] = useState<string | null>(
+    null,
+  );
+
+  const [returnRouteStopsResult, setReturnRouteStopsResult] =
+    useState<RouteStopsResult | null>(null);
+
   useEffect(() => {
     setEnergyPrice(DEFAULT_ENERGY_PRICES[activeFuel]);
   }, [activeFuel]);
+
+  useEffect(() => {
+    const now = new Date();
+
+    const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+
+    setMinimumDepartureDateTime(localNow.toISOString().slice(0, 16));
+  }, []);
 
   useEffect(() => {
     setVehicleEfficiency(null);
@@ -812,15 +876,31 @@ export default function Planner() {
   const isElectric = activeFuel === "electric";
   const currencySymbol = CURRENCY_SYMBOLS[currency];
 
+  const totalDistanceMiles = routeResult
+    ? routeResult.distanceMiles + (returnRouteResult?.distanceMiles ?? 0)
+    : 0;
+
+  const totalDistanceKm = routeResult
+    ? routeResult.distanceKm + (returnRouteResult?.distanceKm ?? 0)
+    : 0;
+
+  const totalDurationSeconds = routeResult
+    ? routeResult.durationSeconds + (returnRouteResult?.durationSeconds ?? 0)
+    : 0;
+
   const journeyCost = routeResult
     ? calculateJourneyCost({
-        distanceMiles: routeResult.distanceMiles,
+        distanceMiles: totalDistanceMiles,
+
         fuelType: activeFuel,
+
         vehicleSize,
+
         energyPrice,
+
         drivingStyle,
-        vehicleEfficiency:
-          vehicleMode === "vehicle" ? vehicleEfficiency : null,
+
+        vehicleEfficiency: vehicleMode === "vehicle" ? vehicleEfficiency : null,
       })
     : null;
 
@@ -850,6 +930,15 @@ export default function Planner() {
           from: fromPlace,
           to: toPlace,
           stops: selectedNavigationStops,
+        })
+      : null;
+
+  const googleMapsReturnUrl =
+    isReturnTrip && fromPlace && toPlace
+      ? buildGoogleMapsUrl({
+          from: toPlace,
+          to: fromPlace,
+          stops: [...selectedNavigationStops].reverse(),
         })
       : null;
 
@@ -892,11 +981,7 @@ export default function Planner() {
   const estimateVehicleEfficiency = async () => {
     if (vehicleMode !== "vehicle") return null;
 
-    if (
-      !vehicleYear.trim() ||
-      !vehicleMake.trim() ||
-      !vehicleModel.trim()
-    ) {
+    if (!vehicleYear.trim() || !vehicleMake.trim() || !vehicleModel.trim()) {
       return null;
     }
 
@@ -920,9 +1005,7 @@ export default function Planner() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.error || "Unable to estimate vehicle efficiency.",
-        );
+        throw new Error(data.error || "Unable to estimate vehicle efficiency.");
       }
 
       const estimate = data as VehicleEfficiencyEstimate;
@@ -954,7 +1037,7 @@ export default function Planner() {
       (place): place is PlaceSuggestion => place !== null,
     );
 
-    const points = [
+    const outboundPoints = [
       {
         lat: fromPlace.lat,
         lon: fromPlace.lon,
@@ -972,13 +1055,40 @@ export default function Planner() {
       },
     ];
 
+    const returnPoints = [
+      {
+        lat: toPlace.lat,
+        lon: toPlace.lon,
+        name: shortPlaceName(toPlace),
+      },
+      ...[...selectedStops].reverse().map((place) => ({
+        lat: place.lat,
+        lon: place.lon,
+        name: shortPlaceName(place),
+      })),
+      {
+        lat: fromPlace.lat,
+        lon: fromPlace.lon,
+        name: shortPlaceName(fromPlace),
+      },
+    ];
+
     try {
       setRouteLoading(true);
       setRouteError(null);
+
+      setRouteResult(null);
+      setReturnRouteResult(null);
+
       setWeatherResult(null);
       setWeatherError(null);
+      setReturnWeatherResult(null);
+      setReturnWeatherError(null);
+
       setRouteStopsResult(null);
       setRouteStopsError(null);
+      setReturnRouteStopsResult(null);
+
       setAiJourney(null);
       setAiJourneyError(null);
 
@@ -986,7 +1096,7 @@ export default function Planner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          points,
+          points: outboundPoints,
           avoidTolls,
           breakFrequencyHours: breakFrequency,
         }),
@@ -1000,17 +1110,71 @@ export default function Planner() {
 
       setRouteResult(data);
 
+      let resolvedReturnRoute: RouteResult | null = null;
+
+      if (isReturnTrip) {
+        const returnResponse = await fetch("/api/route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            points: returnPoints,
+            avoidTolls,
+            breakFrequencyHours: breakFrequency,
+          }),
+        });
+
+        const returnData = (await returnResponse.json()) as RouteResult & {
+          error?: string;
+        };
+
+        if (!returnResponse.ok) {
+          throw new Error(
+            returnData.error || "Unable to calculate the return route.",
+          );
+        }
+
+        resolvedReturnRoute = returnData;
+        setReturnRouteResult(returnData);
+      }
+
+      const outboundDepartureTime =
+        departureMode === "scheduled" && departureDateTime
+          ? new Date(departureDateTime).toISOString()
+          : new Date().toISOString();
+
+      const returnDepartureTime =
+        isReturnTrip && returnDateTime
+          ? new Date(returnDateTime).toISOString()
+          : null;
+
       let resolvedWeather: RouteWeatherResult | null = null;
+      let resolvedReturnWeather: RouteWeatherResult | null = null;
       let resolvedStops: RouteStopsResult | null = null;
+      let resolvedReturnStops: RouteStopsResult | null = null;
+
+      const outboundWeatherAvailable = isWithinForecastWindow(
+        outboundDepartureTime,
+      );
 
       const weatherPromise =
-        Array.isArray(data.weatherSamples) && data.weatherSamples.length > 0
+        outboundWeatherAvailable &&
+        Array.isArray(data.weatherSamples) &&
+        data.weatherSamples.length > 0
           ? fetch("/api/weather/route", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ samples: data.weatherSamples }),
+              body: JSON.stringify({
+                samples: data.weatherSamples,
+                departureTime: outboundDepartureTime,
+              }),
             })
           : null;
+
+      if (!outboundWeatherAvailable) {
+        setWeatherError(
+          "Weather forecasts are only available up to 16 days ahead. Check again closer to your journey.",
+        );
+      }
 
       const routeStopsPromise = fetch("/api/places/route-stops", {
         method: "POST",
@@ -1030,9 +1194,11 @@ export default function Planner() {
       if (weatherResponse) {
         try {
           const weatherData = await weatherResponse.json();
+
           if (!weatherResponse.ok) {
             throw new Error(weatherData.error || "Unable to retrieve weather.");
           }
+
           resolvedWeather = weatherData as RouteWeatherResult;
           setWeatherResult(resolvedWeather);
         } catch (error) {
@@ -1046,9 +1212,11 @@ export default function Planner() {
 
       try {
         const stopData = await routeStopsResponse.json();
+
         if (!routeStopsResponse.ok) {
           throw new Error(stopData.error || "Unable to find route stops.");
         }
+
         resolvedStops = stopData as RouteStopsResult;
         setRouteStopsResult(resolvedStops);
       } catch (error) {
@@ -1059,14 +1227,87 @@ export default function Planner() {
         );
       }
 
+      if (isReturnTrip && resolvedReturnRoute) {
+        const returnWeatherAvailable =
+          Boolean(returnDepartureTime) &&
+          isWithinForecastWindow(returnDepartureTime as string);
+
+        if (returnDepartureTime && returnWeatherAvailable) {
+          try {
+            const returnWeatherResponse = await fetch("/api/weather/route", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                samples: resolvedReturnRoute.weatherSamples,
+                departureTime: returnDepartureTime,
+              }),
+            });
+
+            const returnWeatherData = await returnWeatherResponse.json();
+
+            if (!returnWeatherResponse.ok) {
+              throw new Error(
+                returnWeatherData.error || "Return weather unavailable.",
+              );
+            }
+
+            resolvedReturnWeather = returnWeatherData as RouteWeatherResult;
+            setReturnWeatherResult(resolvedReturnWeather);
+          } catch (error) {
+            console.error("Return weather lookup failed:", error);
+            setReturnWeatherResult(null);
+            setReturnWeatherError(
+              "Return route calculated, but return weather is temporarily unavailable.",
+            );
+          }
+        } else {
+          setReturnWeatherResult(null);
+          setReturnWeatherError(
+            "Weather forecasts are only available up to 16 days ahead. Check again closer to your return journey.",
+          );
+        }
+
+        try {
+          const returnStopsResponse = await fetch("/api/places/route-stops", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              breakAnchors: resolvedReturnRoute.breakAnchors ?? [],
+              serviceSearchPoint:
+                resolvedReturnRoute.serviceSearchPoint ?? null,
+              fuelType: activeFuel,
+            }),
+          });
+
+          const returnStopsData = await returnStopsResponse.json();
+
+          if (!returnStopsResponse.ok) {
+            throw new Error(
+              returnStopsData.error || "Unable to find return route stops.",
+            );
+          }
+
+          resolvedReturnStops = returnStopsData as RouteStopsResult;
+          setReturnRouteStopsResult(resolvedReturnStops);
+        } catch (error) {
+          console.error("Return route stop lookup failed:", error);
+          setReturnRouteStopsResult(null);
+        }
+      }
+
+      const combinedDistanceMiles =
+        data.distanceMiles + (resolvedReturnRoute?.distanceMiles ?? 0);
+
+      const combinedDurationSeconds =
+        data.durationSeconds + (resolvedReturnRoute?.durationSeconds ?? 0);
+
       const freshJourneyCost = calculateJourneyCost({
-        distanceMiles: data.distanceMiles,
+        distanceMiles: combinedDistanceMiles,
         fuelType: activeFuel,
         vehicleSize,
         energyPrice,
         drivingStyle,
-        vehicleEfficiency:
-          vehicleMode === "vehicle" ? vehicleEfficiency : null,
+        vehicleEfficiency: vehicleMode === "vehicle" ? vehicleEfficiency : null,
       });
 
       const freshEmissions = calculateJourneyEmissions({
@@ -1079,13 +1320,18 @@ export default function Planner() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            trip: {
+              type: isReturnTrip ? "round_trip" : "one_way",
+              outboundDeparture: outboundDepartureTime,
+              returnDeparture: returnDepartureTime,
+            },
             route: {
               from: shortPlaceName(fromPlace),
               to: shortPlaceName(toPlace),
-              distanceMiles: data.distanceMiles,
-              durationSeconds: data.durationSeconds,
-              toll: data.toll,
-              ferry: data.ferry,
+              distanceMiles: combinedDistanceMiles,
+              durationSeconds: combinedDurationSeconds,
+              toll: data.toll || Boolean(resolvedReturnRoute?.toll),
+              ferry: data.ferry || Boolean(resolvedReturnRoute?.ferry),
               userStops: selectedStops.map((place) => shortPlaceName(place)),
             },
             vehicle: {
@@ -1120,8 +1366,28 @@ export default function Planner() {
                   windGust: point.windGust,
                 })) ?? [],
             },
+            returnWeather: isReturnTrip
+              ? {
+                  overallRisk: resolvedReturnWeather?.overallRisk ?? "unknown",
+                  warnings: resolvedReturnWeather?.warnings ?? [],
+                  points:
+                    resolvedReturnWeather?.points.map((point) => ({
+                      position: point.position,
+                      condition: point.condition,
+                      temperature: point.temperature,
+                      precipitationProbability: point.precipitationProbability,
+                      windGust: point.windGust,
+                    })) ?? [],
+                }
+              : null,
             breaks:
               resolvedStops?.breaks.map((item) => ({
+                elapsedSeconds: item.anchor.elapsedSeconds,
+                placeName: item.recommendedBreak?.name ?? null,
+                distanceMiles: item.recommendedBreak?.distanceMiles ?? null,
+              })) ?? [],
+            returnBreaks:
+              resolvedReturnStops?.breaks.map((item) => ({
                 elapsedSeconds: item.anchor.elapsedSeconds,
                 placeName: item.recommendedBreak?.name ?? null,
                 distanceMiles: item.recommendedBreak?.distanceMiles ?? null,
@@ -1134,13 +1400,23 @@ export default function Planner() {
                     resolvedStops.recommendedVehicleStop.distanceMiles,
                 }
               : null,
+            returnVehicleStop: resolvedReturnStops?.recommendedVehicleStop
+              ? {
+                  name: resolvedReturnStops.recommendedVehicleStop.name,
+                  address: resolvedReturnStops.recommendedVehicleStop.address,
+                  distanceMiles:
+                    resolvedReturnStops.recommendedVehicleStop.distanceMiles,
+                }
+              : null,
           }),
         });
 
         const aiData = await aiResponse.json();
+
         if (!aiResponse.ok) {
           throw new Error(aiData.error || "Unable to generate AI advice.");
         }
+
         setAiJourney(aiData as AIJourneyResult);
       } catch (error) {
         console.error("AI journey generation failed:", error);
@@ -1196,11 +1472,33 @@ export default function Planner() {
     setAiJourney(null);
     setAiJourneyError(null);
     setQrCodeUrl(null);
+    setIsReturnTrip(false);
+    setDepartureMode("now");
+    setDepartureDateTime("");
+    setReturnDateTime("");
+    setReturnRouteResult(null);
+    setReturnWeatherResult(null);
+    setReturnWeatherError(null);
+    setReturnRouteStopsResult(null);
   };
 
   const invalidStopExists = stops.some(
     (stop, index) => stop.trim().length > 0 && !stopPlaces[index],
   );
+
+  const hasValidDeparture =
+    departureMode === "now" || Boolean(departureDateTime);
+
+  const hasValidReturn =
+    !isReturnTrip ||
+    (Boolean(returnDateTime) &&
+      (departureMode === "now" ||
+        !departureDateTime ||
+        new Date(returnDateTime).getTime() >=
+          new Date(departureDateTime).getTime()));
+
+  const canContinueFromRoute =
+    routeReady && !invalidStopExists && hasValidDeparture && hasValidReturn;
 
   return (
     <section className="planner-section" id="planner">
@@ -1352,6 +1650,108 @@ export default function Planner() {
                 </div>
               </div>
 
+              <div className="trip-options-card">
+                <label className="planner-checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={isReturnTrip}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+
+                      setIsReturnTrip(checked);
+
+                      if (!checked) {
+                        setReturnDateTime("");
+                      }
+                    }}
+                  />
+
+                  <span className="planner-checkbox-mark" />
+
+                  <span>
+                    <strong>Return trip</strong>
+
+                    <small>
+                      Include the journey back in distance, cost, emissions and
+                      weather.
+                    </small>
+                  </span>
+                </label>
+
+                <div className="trip-schedule-block">
+                  <div className="trip-schedule-heading">
+                    <strong>When are you leaving?</strong>
+
+                    <span className="hand-note">default = now</span>
+                  </div>
+
+                  <div className="trip-time-options">
+                    <button
+                      type="button"
+                      className={`trip-time-option ${
+                        departureMode === "now" ? "trip-time-option-active" : ""
+                      }`}
+                      onClick={() => {
+                        setDepartureMode("now");
+
+                        setDepartureDateTime("");
+                      }}
+                    >
+                      Leave now
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`trip-time-option ${
+                        departureMode === "scheduled"
+                          ? "trip-time-option-active"
+                          : ""
+                      }`}
+                      onClick={() => setDepartureMode("scheduled")}
+                    >
+                      Schedule
+                    </button>
+                  </div>
+
+                  {departureMode === "scheduled" && (
+                    <input
+                      type="datetime-local"
+                      value={departureDateTime}
+                      min={minimumDepartureDateTime}
+                      onChange={(event) =>
+                        setDepartureDateTime(event.target.value)
+                      }
+                      className="trip-datetime-input"
+                    />
+                  )}
+
+                  {isReturnTrip && (
+                    <div className="return-time-block">
+                      <label htmlFor="return-date-time">Return departure</label>
+
+                      <input
+                        id="return-date-time"
+                        type="datetime-local"
+                        value={returnDateTime}
+                        min={
+                          departureMode === "scheduled" && departureDateTime
+                            ? departureDateTime
+                            : minimumDepartureDateTime
+                        }
+                        onChange={(event) =>
+                          setReturnDateTime(event.target.value)
+                        }
+                        className="trip-datetime-input"
+                      />
+
+                      <small>
+                        Used for return-route weather and journey advice.
+                      </small>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="planner-form-footer">
                 <div className="planner-tip">
                   <Sparkles size={16} />
@@ -1364,7 +1764,7 @@ export default function Planner() {
                 <button
                   type="button"
                   className="planner-next-button"
-                  disabled={!routeReady}
+                  disabled={!canContinueFromRoute}
                   onClick={() => setStep(2)}
                 >
                   Continue
@@ -1711,15 +2111,15 @@ export default function Planner() {
                     {vehicleEfficiency?.efficiency ? (
                       <>
                         <strong>
-                          Estimated vehicle efficiency: {" "}
+                          Estimated vehicle efficiency:{" "}
                           {vehicleEfficiency.unit === "mpg"
                             ? `${Math.round(vehicleEfficiency.efficiency)} MPG`
                             : `${vehicleEfficiency.efficiency.toFixed(1)} mi/kWh`}
                         </strong>
 
                         <span>
-                          {vehicleEfficiency.matchedVehicle} · {" "}
-                          {vehicleEfficiency.confidence} confidence. {" "}
+                          {vehicleEfficiency.matchedVehicle} ·{" "}
+                          {vehicleEfficiency.confidence} confidence.{" "}
                           {vehicleEfficiency.note}
                         </span>
                       </>
@@ -1962,13 +2362,18 @@ export default function Planner() {
                   <span>READY TO PLAN</span>
 
                   <strong>
-                    {displayFrom} → {displayTo}
+                    {displayFrom} {isReturnTrip ? "⇄" : "→"} {displayTo}
                   </strong>
 
                   <small>
-                    {activeFuel.charAt(0).toUpperCase() + activeFuel.slice(1)}
+                    {isReturnTrip ? "Return trip · " : "One way · "}
+                    {departureMode === "scheduled" && departureDateTime
+                      ? formatTripDateTime(
+                          new Date(departureDateTime).toISOString(),
+                        )
+                      : "leave now"}
                     {" · "}
-                    {breakLabel.toLowerCase()}
+                    {activeFuel.charAt(0).toUpperCase() + activeFuel.slice(1)}
                     {" · "}
                     {currency}
                   </small>
@@ -2043,13 +2448,28 @@ export default function Planner() {
                       Your drive plan
                     </span>
 
+                    <span className="journey-type-badge">
+                      {isReturnTrip ? "ROUND TRIP" : "ONE WAY"}
+                    </span>
+
                     <h3>
                       {displayFrom}
-                      <span> → </span>
+                      <span>{isReturnTrip ? " ⇄ " : " → "}</span>
                       {displayTo}
                     </h3>
 
-                    <p>Here&apos;s the full picture before you set off.</p>
+                    <p>
+                      {departureMode === "scheduled" && departureDateTime
+                        ? `Outbound: ${formatTripDateTime(
+                            new Date(departureDateTime).toISOString(),
+                          )}`
+                        : "Outbound: leave now"}
+                      {isReturnTrip && returnDateTime
+                        ? ` · Return: ${formatTripDateTime(
+                            new Date(returnDateTime).toISOString(),
+                          )}`
+                        : ""}
+                    </p>
                   </div>
                 </div>
 
@@ -2088,14 +2508,14 @@ export default function Planner() {
 
                   <small>Distance</small>
                   <strong>
-                    {routeResult
-                      ? `${routeResult.distanceMiles.toFixed(0)} mi`
-                      : "—"}
+                    {routeResult ? `${totalDistanceMiles.toFixed(0)} mi` : "—"}
                   </strong>
 
                   <p>
                     {routeResult
-                      ? `${routeResult.distanceKm.toFixed(0)} km total`
+                      ? `${totalDistanceKm.toFixed(0)} km ${
+                          isReturnTrip ? "round trip" : "total"
+                        }`
                       : "route distance"}
                   </p>
                 </div>
@@ -2107,9 +2527,7 @@ export default function Planner() {
 
                   <small>Driving time</small>
                   <strong>
-                    {routeResult
-                      ? formatDuration(routeResult.durationSeconds)
-                      : "—"}
+                    {routeResult ? formatDuration(totalDurationSeconds) : "—"}
                   </strong>
 
                   <p>before planned breaks</p>
@@ -2173,6 +2591,26 @@ export default function Planner() {
                 </div>
               </div>
 
+              {isReturnTrip && routeResult && returnRouteResult && (
+                <div className="round-trip-breakdown">
+                  <div>
+                    <small>OUTBOUND</small>
+                    <strong>{routeResult.distanceMiles.toFixed(0)} mi</strong>
+                    <span>{formatDuration(routeResult.durationSeconds)}</span>
+                  </div>
+
+                  <div>
+                    <small>RETURN</small>
+                    <strong>
+                      {returnRouteResult.distanceMiles.toFixed(0)} mi
+                    </strong>
+                    <span>
+                      {formatDuration(returnRouteResult.durationSeconds)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {journeyCost && (
                 <div className="cost-breakdown-card">
                   <div className="cost-breakdown-heading">
@@ -2192,9 +2630,7 @@ export default function Planner() {
                       <>
                         <span>
                           <small>Distance</small>
-                          <strong>
-                            {routeResult?.distanceMiles.toFixed(0)} mi
-                          </strong>
+                          <strong>{totalDistanceMiles.toFixed(0)} mi</strong>
                         </span>
 
                         <span className="cost-symbol">÷</span>
@@ -2230,9 +2666,7 @@ export default function Planner() {
                       <>
                         <span>
                           <small>Distance</small>
-                          <strong>
-                            {routeResult?.distanceMiles.toFixed(0)} mi
-                          </strong>
+                          <strong>{totalDistanceMiles.toFixed(0)} mi</strong>
                         </span>
 
                         <span className="cost-symbol">÷</span>
@@ -2504,6 +2938,67 @@ export default function Planner() {
                   {routeStopsError && (
                     <div className="route-stop-error">{routeStopsError}</div>
                   )}
+
+                  {isReturnTrip && returnRouteResult && (
+                    <div className="return-route-summary">
+                      <div className="return-route-summary-heading">
+                        <div>
+                          <small>RETURN JOURNEY</small>
+                          <strong>
+                            {displayTo} → {displayFrom}
+                          </strong>
+                        </div>
+                        <span>
+                          {returnRouteResult.distanceMiles.toFixed(0)} mi ·{" "}
+                          {formatDuration(returnRouteResult.durationSeconds)}
+                        </span>
+                      </div>
+
+                      {returnRouteStopsResult?.breaks.length ? (
+                        <div className="return-route-break-list">
+                          {returnRouteStopsResult.breaks.map((item, index) => (
+                            <div key={`return-break-${index}`}>
+                              <Coffee size={15} />
+                              <span>
+                                <small>BREAK {index + 1}</small>
+                                <strong>
+                                  {item.recommendedBreak?.name ??
+                                    "Break around this point"}
+                                </strong>
+                                <em>
+                                  around{" "}
+                                  {formatElapsedTime(
+                                    item.anchor.elapsedSeconds,
+                                  )}
+                                </em>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      {returnRouteStopsResult?.recommendedVehicleStop && (
+                        <div className="return-vehicle-stop">
+                          {isElectric ? (
+                            <BatteryCharging size={16} />
+                          ) : (
+                            <Fuel size={16} />
+                          )}
+                          <span>
+                            <small>
+                              RETURN {isElectric ? "CHARGING" : "FUEL"} OPTION
+                            </small>
+                            <strong>
+                              {
+                                returnRouteStopsResult.recommendedVehicleStop
+                                  .name
+                              }
+                            </strong>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="results-side-stack">
@@ -2514,7 +3009,9 @@ export default function Planner() {
                       </span>
 
                       <div>
-                        <small>ROUTE WEATHER</small>
+                        <small>
+                          {isReturnTrip ? "OUTBOUND WEATHER" : "ROUTE WEATHER"}
+                        </small>
 
                         <strong>
                           {weatherResult
@@ -2593,6 +3090,77 @@ export default function Planner() {
                     )}
                   </div>
 
+                  {isReturnTrip && (
+                    <div className="weather-result-card return-weather-card">
+                      <div className="weather-result-top">
+                        <span className="weather-result-icon">
+                          <CloudRain size={25} />
+                        </span>
+
+                        <div>
+                          <small>RETURN WEATHER</small>
+                          <strong>
+                            {returnWeatherResult
+                              ? returnWeatherResult.overallRisk === "high"
+                                ? "Difficult conditions"
+                                : returnWeatherResult.overallRisk === "medium"
+                                  ? "Some caution needed"
+                                  : "Looking good"
+                              : returnWeatherError
+                                ? "Unavailable"
+                                : "Checking return route"}
+                          </strong>
+                        </div>
+
+                        {returnWeatherResult && (
+                          <span
+                            className={`weather-risk-badge weather-risk-${returnWeatherResult.overallRisk}`}
+                          >
+                            {returnWeatherResult.overallRisk.toUpperCase()} RISK
+                          </span>
+                        )}
+                      </div>
+
+                      {returnWeatherResult ? (
+                        <>
+                          <p>
+                            {returnWeatherResult.warnings.length > 0
+                              ? returnWeatherResult.warnings[0]
+                              : "No significant weather hazards are expected on the return route at your approximate travel times."}
+                          </p>
+
+                          <div className="weather-route-points">
+                            {returnWeatherResult.points.map((point) => (
+                              <span
+                                key={`return-${point.lat}-${point.lon}`}
+                                className={
+                                  point.riskLevel !== "low"
+                                    ? "weather-point-warning"
+                                    : ""
+                                }
+                              >
+                                {point.position}
+                                <strong>
+                                  {point.condition}{" "}
+                                  {Math.round(point.temperature)}°
+                                </strong>
+                                <small>
+                                  {Math.round(point.precipitationProbability)}%
+                                  rain · gusts {Math.round(point.windGust)} km/h
+                                </small>
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <p>
+                          {returnWeatherError ??
+                            "Return weather data is being checked."}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   <div className="toll-result-card">
                     <span className="result-small-icon">
                       <WalletCards size={20} />
@@ -2601,7 +3169,7 @@ export default function Planner() {
                     <div>
                       <small>TOLLS &amp; ROAD CHARGES</small>
                       <strong>
-                        {routeResult?.toll
+                        {routeResult?.toll || returnRouteResult?.toll
                           ? "Toll road detected"
                           : avoidTolls
                             ? "Toll-free route"
@@ -2609,11 +3177,11 @@ export default function Planner() {
                       </strong>
 
                       <p>
-                        {routeResult?.toll
-                          ? "This calculated route includes at least one toll road. Exact charges will be estimated separately."
+                        {routeResult?.toll || returnRouteResult?.toll
+                          ? `At least one ${isReturnTrip ? "journey leg" : "route"} includes a toll road. Exact charges are not included in the cost estimate.`
                           : avoidTolls
                             ? "The route was calculated with toll roads avoided where possible."
-                            : "Geoapify did not flag a toll road on this route."}
+                            : `Geoapify did not flag a toll road on ${isReturnTrip ? "either journey leg" : "this route"}.`}
                       </p>
                     </div>
                   </div>
@@ -2694,7 +3262,7 @@ export default function Planner() {
                         <small>TIME</small>
                         <strong>
                           {routeResult
-                            ? formatDuration(routeResult.durationSeconds)
+                            ? formatDuration(totalDurationSeconds)
                             : "—"}
                         </strong>
                       </span>
@@ -2732,14 +3300,18 @@ export default function Planner() {
 
                     <div className="travel-choice-stats">
                       <span>
-                        <small>EST. TIME</small>
+                        <small>
+                          {isReturnTrip ? "EST. ONE-WAY TIME" : "EST. TIME"}
+                        </small>
                         <strong>
                           {aiJourney?.trainEstimate?.durationText ?? "N/A"}
                         </strong>
                       </span>
 
                       <span>
-                        <small>EST. FARE</small>
+                        <small>
+                          {isReturnTrip ? "EST. RETURN FARE" : "EST. FARE"}
+                        </small>
                         <strong>
                           {aiJourney?.trainEstimate?.fareText ?? "N/A"}
                         </strong>
@@ -2751,8 +3323,8 @@ export default function Planner() {
                         ? "No practical rail journey identified."
                         : aiJourney?.trainEstimate?.available === "uncertain"
                           ? "A rail option may exist, but the estimate is uncertain."
-                          : aiJourney?.trainEstimate?.note ??
-                            "Approximate AI rail estimate."}
+                          : (aiJourney?.trainEstimate?.note ??
+                            "Approximate AI rail estimate.")}
                     </p>
 
                     {aiJourney?.trainEstimate?.durationText && (
@@ -2792,6 +3364,19 @@ export default function Planner() {
                       </a>
                     )}
 
+                    {googleMapsReturnUrl && (
+                      <a
+                        className="maps-button maps-button-secondary"
+                        href={googleMapsReturnUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <Navigation size={18} />
+                        Return route
+                        <ExternalLink size={15} />
+                      </a>
+                    )}
+
                     {wazeUrl && (
                       <a
                         className="waze-button"
@@ -2807,8 +3392,10 @@ export default function Planner() {
                   </div>
 
                   <small className="navigation-link-note">
-                    Google Maps includes your planned stops. Waze opens
-                    navigation to the final destination.
+                    Google Maps includes your planned stops.
+                    {isReturnTrip
+                      ? " The QR opens the outbound route; use Return route for the journey home."
+                      : " Waze opens navigation to the final destination."}
                   </small>
                 </div>
 
@@ -2841,7 +3428,11 @@ export default function Planner() {
                   )}
 
                   <strong>Open this route</strong>
-                  <small>Scan to open the route in Google Maps.</small>
+                  <small>
+                    {isReturnTrip
+                      ? "Scan to open the outbound route in Google Maps."
+                      : "Scan to open the route in Google Maps."}
+                  </small>
                 </div>
               </div>
 

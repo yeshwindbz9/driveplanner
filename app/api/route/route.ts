@@ -513,29 +513,29 @@ export async function POST(request: NextRequest) {
      * TEMP debug information is useful
      * while we're confirming this fix.
      */
-    console.log("DrivePlanner route debug:", {
-      durationSeconds,
+    // console.log("DrivePlanner route debug:", {
+    //   durationSeconds,
 
-      durationHours: durationSeconds / 3600,
+    //   durationHours: durationSeconds / 3600,
 
-      breakFrequencyHours: safeBreakFrequency,
+    //   breakFrequencyHours: safeBreakFrequency,
 
-      geometryType: geometry?.type,
+    //   geometryType: geometry?.type,
 
-      geometryCoordinates: geometryCoordinates.length,
+    //   geometryCoordinates: geometryCoordinates.length,
 
-      breakAnchors: breakAnchors.length,
+    //   breakAnchors: breakAnchors.length,
 
-      anchors: breakAnchors.map((anchor) => ({
-        progress: anchor.progress,
+    //   anchors: breakAnchors.map((anchor) => ({
+    //     progress: anchor.progress,
 
-        elapsedHours: anchor.elapsedSeconds / 3600,
+    //     elapsedHours: anchor.elapsedSeconds / 3600,
 
-        lat: anchor.lat,
+    //     lat: anchor.lat,
 
-        lon: anchor.lon,
-      })),
-    });
+    //     lon: anchor.lon,
+    //   })),
+    // });
 
     return NextResponse.json({
       distanceMiles,

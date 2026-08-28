@@ -9,6 +9,7 @@ type WeatherSample = {
 
 type WeatherRequest = {
   samples: WeatherSample[];
+  departureTime?: string;
 };
 
 type HourlyWeather = {
@@ -254,7 +255,7 @@ export async function POST(request: NextRequest) {
 
       precipitation_unit: "mm",
 
-      forecast_days: "7",
+      forecast_days: "16",
     });
 
     const response = await fetch(
@@ -289,7 +290,16 @@ export async function POST(request: NextRequest) {
 
     const locations: OpenMeteoLocation[] = Array.isArray(raw) ? raw : [raw];
 
-    const departureTime = new Date();
+    const departureTime = body.departureTime
+      ? new Date(body.departureTime)
+      : new Date();
+
+    if (Number.isNaN(departureTime.getTime())) {
+      return NextResponse.json(
+        { error: "Invalid departure time." },
+        { status: 400 },
+      );
+    }
 
     const points = samples
       .map((sample, sampleIndex) => {

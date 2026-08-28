@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
 type JourneyPayload = {
+  trip: {
+    type: "one_way" | "round_trip";
+    outboundDeparture: string;
+    returnDeparture: string | null;
+  };
   route: {
     from: string;
     to: string;
@@ -32,27 +37,36 @@ type JourneyPayload = {
     avoidTolls: boolean;
     weatherSensitive: boolean;
   };
-  weather: {
-    overallRisk: "low" | "medium" | "high" | "unknown";
-    warnings: string[];
-    points: Array<{
-      position: string;
-      condition: string;
-      temperature: number;
-      precipitationProbability: number;
-      windGust: number;
-    }>;
-  };
-  breaks: Array<{
-    elapsedSeconds: number;
-    placeName: string | null;
-    distanceMiles: number | null;
+  weather: JourneyWeather;
+  returnWeather: JourneyWeather | null;
+  breaks: JourneyBreak[];
+  returnBreaks: JourneyBreak[];
+  vehicleStop: JourneyVehicleStop | null;
+  returnVehicleStop: JourneyVehicleStop | null;
+};
+
+type JourneyWeather = {
+  overallRisk: "low" | "medium" | "high" | "unknown";
+  warnings: string[];
+  points: Array<{
+    position: string;
+    condition: string;
+    temperature: number;
+    precipitationProbability: number;
+    windGust: number;
   }>;
-  vehicleStop: {
-    name: string;
-    address: string;
-    distanceMiles: number;
-  } | null;
+};
+
+type JourneyBreak = {
+  elapsedSeconds: number;
+  placeName: string | null;
+  distanceMiles: number | null;
+};
+
+type JourneyVehicleStop = {
+  name: string;
+  address: string;
+  distanceMiles: number;
 };
 
 const RESPONSE_SCHEMA = {
@@ -98,13 +112,7 @@ const RESPONSE_SCHEMA = {
         },
         note: { type: "string" },
       },
-      required: [
-        "available",
-        "durationText",
-        "fareText",
-        "confidence",
-        "note",
-      ],
+      required: ["available", "durationText", "fareText", "confidence", "note"],
     },
   },
   required: [
@@ -164,6 +172,20 @@ TRAIN ESTIMATE RULES:
 - Do not invent a train journey merely to fill the fields.
 - If the destination is an airport/landmark with a normal rail connection, estimate the practical rail journey to that destination where reasonable.
 - note should include a short caveat/context, not repeat the entire disclaimer.
+
+ROUND TRIP RULES:
+- If trip.type is "round_trip", the supplied driving distance, duration, cost, energy use and emissions represent the ENTIRE outbound + return journey.
+- Do not describe those combined driving totals as one-way figures.
+- For a round trip, trainEstimate.durationText should be the approximate ONE-WAY rail journey duration.
+- For a round trip, trainEstimate.fareText should be a broad approximate RETURN rail fare in the supplied currency.
+- For a round trip, make the trainEstimate.note clear that time is one-way and fare is return.
+- Consider both outbound and return supplied weather when writing weatherAdvice.
+- If return weather is unknown/unavailable, say that briefly rather than inventing conditions.
+- Return-route breaks and vehicle stops are optional context; use them only when helpful.
+
+SCHEDULE RULES:
+- Respect trip.outboundDeparture and trip.returnDeparture as the planned travel times supplied by the app.
+- If the journey is scheduled, write advice for those planned times, not as though the user is leaving immediately.
 
 Do not claim that you checked live rail data, traffic, fuel prices or weather outside the supplied data.
 `.trim();

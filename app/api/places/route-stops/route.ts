@@ -312,15 +312,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log("DrivePlanner stop search:", {
-      breakAnchorCount: breakAnchors.length,
+    // console.log("DrivePlanner stop search:", {
+    //   breakAnchorCount: breakAnchors.length,
 
-      breakAnchors,
+    //   breakAnchors,
 
-      serviceSearchPoint,
+    //   serviceSearchPoint,
 
-      fuelType,
-    });
+    //   fuelType,
+    // });
 
     const allAnchors = [...breakAnchors];
 
@@ -349,15 +349,15 @@ export async function POST(request: NextRequest) {
           fuelType,
         });
 
-        console.log("Stop anchor result:", {
-          progress: anchor.progress,
+        // console.log("Stop anchor result:", {
+        //   progress: anchor.progress,
 
-          elapsedHours: anchor.elapsedSeconds / 3600,
+        //   elapsedHours: anchor.elapsedSeconds / 3600,
 
-          places: result.places.length,
+        //   places: result.places.length,
 
-          radius: result.searchRadiusMeters,
-        });
+        //   radius: result.searchRadiusMeters,
+        // });
 
         return {
           anchor,
@@ -405,13 +405,13 @@ export async function POST(request: NextRequest) {
       new Map(vehicleCandidates.map((place) => [place.id, place])).values(),
     ).sort((a, b) => a.distanceMiles - b.distanceMiles);
 
-    console.log("DrivePlanner stops result:", {
-      breaks: breaks.length,
+    // console.log("DrivePlanner stops result:", {
+    //   breaks: breaks.length,
 
-      breaksWithPlaces: breaks.filter((item) => item.recommendedBreak).length,
+    //   breaksWithPlaces: breaks.filter((item) => item.recommendedBreak).length,
 
-      vehicleStops: uniqueVehicleStops.length,
-    });
+    //   vehicleStops: uniqueVehicleStops.length,
+    // });
 
     return NextResponse.json({
       breaks,
